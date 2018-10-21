@@ -1,4 +1,10 @@
+const { slices, pushAll } = require('./array')
+const {toStl, rotate} = require('./stl')
+
 const THREE = require('./three')
+
+const transformedSkinVertex = require('./transformed-skin-vertex')
+
 
 THREE.Baker = function() {};
 
@@ -20,7 +26,8 @@ THREE.Baker.prototype = {
       //
 
       var objects = [];
-      var triangles = 0;
+      var triangles = [];
+      const _triangles = triangles
 
       scene.traverse(function(object) {
 
@@ -28,107 +35,50 @@ THREE.Baker.prototype = {
 
           if (object.pose && object.skeleton && typeof(object.skeleton.pose) == 'function') {
             console.log('Posing object', object)
-            object.pose();
+            //object.pose();
           }
-          console.log(object)
+          if (object.geometry && object.geometry.attributes) {
+            object.geometry.attributes._geometry = object.geometry
+            object.geometry.attributes._object = object
+            console.log(object.geometry.attributes)
+          }
           var og = object.geometry;
           var geometry = object.geometry;
           /* FROM */
 
-          function checkBufferGeometryIntersection(object, positions, uvs, a, b, c) {
-            var inverseMatrix = new THREE.Matrix4();
-            var ray = new THREE.Ray();
-            var sphere = new THREE.Sphere();
-
-            var vA = new THREE.Vec3();
-            var vB = new THREE.Vec3();
-            var vC = new THREE.Vec3();
-
-            var tempA = new THREE.Vec3();
-            var tempB = new THREE.Vec3();
-            var tempC = new THREE.Vec3();
-
-            var uvA = new THREE.Vec2();
-            var uvB = new THREE.Vec2();
-            var uvC = new THREE.Vec2();
-
-            var barycoord = new THREE.Vec3();
-
-            var intersectionPoint = new THREE.Vec3();
-            var intersectionPointWorld = new THREE.Vec3();
-            vA.fromArray(positions, a * 3);
-            vB.fromArray(positions, b * 3);
-            vC.fromArray(positions, c * 3);
-
-            if (object.boneTransform) {
-
-              vA = object.boneTransform(vA, a);
-              vB = object.boneTransform(vB, b);
-              vC = object.boneTransform(vC, c);
-
-            }
-          }
-          var uvs, intersection;
-
+          let positions, triangles, skinIndices, skinWeights
           if (geometry instanceof THREE.BufferGeometry) {
-            debugger;
-            console.log('BUFFER')
             var a, b, c;
             var index = geometry.index;
             var attributes = geometry.attributes;
-            var positions = attributes.position.array;
 
-            if (attributes.uv !== undefined) {
+            // Figure out where each triangle is supposed to be, globally.
+            positions = slices(attributes.position.array, 3).map(([x, y, z]) => new THREE.Vec3(x, y, z));
+            triangles = index
+            ? slices(Array.from(index.array).map(i => positions[i]), 3)
+            : slices(positions, 3)
 
-              uvs = attributes.uv.array;
-
-            }
-
-            if (index !== null) {
-
-              var indices = index.array;
-
-              for (var i = 0, l = indices.length; i < l; i += 3) {
-
-                a = indices[i];
-                b = indices[i + 1];
-                c = indices[i + 2];
-
-                intersection = checkBufferGeometryIntersection(this, positions, uvs, a, b, c);
-
-                if (intersection) {
-
-                  intersection.faceIndex = Math.floor(i / 3); // triangle number in indices buffer semantics
-                  intersects.push(intersection);
-
-                }
-
-              }
-
-            } else {
-
-
-              for (var i = 0, l = positions.length; i < l; i += 9) {
-
-                a = i / 3;
-                b = a + 1;
-                c = a + 2;
-
-                intersection = checkBufferGeometryIntersection(this, positions, uvs, a, b, c);
-
-                if (intersection) {
-
-                  intersection.index = a; // triangle number in positions buffer semantics
-                  intersects.push(intersection);
-
-                }
-
-              }
-
-            }
+            if (attributes.skinIndex) {
+              skinIndices = slices(Array.from(attributes.skinIndex.array), 4)
+              skinWeights = slices(attributes.skinWeight.array, 4)
+            }  
 
           } else if (geometry instanceof THREE.Geometry) {
             console.log('GEOMETRY')
+
+            positions = geometry.vertices.map(v => v.clone())
+            triangles = geometry.faces.map(({a, b, c}) => [
+              positions[a],
+              positions[b],
+              positions[c]
+            ])
+            if (object.geometry.skinIndices) {
+              skinIndices = object.geometry.skinIndices.map(({x, y, z, w}) => [x, y, z, w])
+              skinWeights = object.geometry.skinWeights.map(({x, y, z, w}) => [x, y, z, w])
+            }  
+
+            {
+  /*
             var fvA, fvB, fvC;
             //var isFaceMaterial = material instanceof THREE.MultiMaterial;
             //var materials = isFaceMaterial === true ? material.materials : null;
@@ -149,7 +99,7 @@ THREE.Baker.prototype = {
               fvB = vertices[face.b];
               fvC = vertices[face.c];
 
-              /*
+              / *
               if ( faceMaterial.morphTargets === true ) {
 
                   var morphTargets = geometry.morphTargets;
@@ -182,90 +132,116 @@ THREE.Baker.prototype = {
                   fvC = vC;
 
               }
-              */
+              * /
 
-              if (this.boneTransform) {
-                console.log('YES')
-                fvA = this.boneTransform(fvA, face.a);
-                fvB = this.boneTransform(fvB, face.b);
-                fvC = this.boneTransform(fvC, face.c);
+              // if (this.boneTransform) {
+              //   console.log('YES')
+              //   fvA = this.boneTransform(fvA, face.a);
+              //   fvB = this.boneTransform(fvB, face.b);
+              //   fvC = this.boneTransform(fvC, face.c);
 
-              }
+              // }
 
 
 
             }
-
+*/
+            }
           } else {
             console.log(geometry && geometry.constructor.name || 'Non-Geo')
           }
 
+          let o = object
+          // positions.forEach((p, i) => {
+          //   p.applyMatrix4(object.matrixWorld)
+          // })
+          if (skinIndices) {
+            // const skinIndices = object.geometry.skinIndices.map(({x, y, z, w}) => [x, y, z, w])
+            // const skinWeights = object.geometry.skinWeights.map(({x, y, z, w}) => [x, y, z, w])
+            const bones = object.skeleton.bones
+
+            positions.forEach((p, index) => {
+
+              var skinIndex = skinIndices[index]
+              var skinWeight = skinWeights[index]
+              const skinVertex = p.clone().applyMatrix4(object.bindMatrix)
+              //var skinVertex = positions[index].applyMatrix4(object.bindMatrix)
+              //(new THREE.Vector3 ()).fromAttribute (skin.geometry.getAttribute ('position'), index).applyMatrix4 (skin.bindMatrix);
+              var result = new THREE.Vector3 ()
+              var temp = new THREE.Vector3 ()
+              var tempMatrix = new THREE.Matrix4 ()
+              var properties = ['x', 'y', 'z', 'w'];
+              for (var i = 0; i < 4; i++) {
+                  var boneIndex = skinIndex[i];
+                  if (boneIndex >= 0) {
+                    tempMatrix.multiplyMatrices (object.skeleton.bones[boneIndex].matrixWorld, object.skeleton.boneInverses[boneIndex]);
+                    //result.add (temp.copy (skinVertex).multiplyScalar (skinWeights[properties[i]]).applyMatrix4 (tempMatrix));
+                    //result.add (temp.copy (skinVertex).applyMatrix4 (tempMatrix).multiplyScalar (skinWeight[i]));
+                    result.add(skinVertex.clone().applyMatrix4(tempMatrix).multiplyScalar(skinWeight[i]))
+                  }
+            
+              }
+              result.applyMatrix4(object.bindMatrixInverse)
+
+              p.copy(result)
+              //return result.applyMatrix4 (skin.bindMatrixInverse);
+            
+              // const skinIndex = skinIndices[i]
+              // const skinWeight = skinWeights[i]
+              // skinIndex.forEach((s, j) => {
+              //   //https://stackoverflow.com/questions/31620194/how-to-calculate-transformed-skin-vertices
+              //   //result.add (temp.copy (skinVertex).applyMatrix4 (tempMatrix).multiplyScalar (skinWeights[properties[i]]));
+
+
+              //   const w = skinWeight[j]
+              //   const bone = bones[s]
+              //   if (bone) {
+              //     p.add(p.clone().applyMatrix4(bone.matrixWorld).multiplyScalar(w))
+              //   }
+              // })
+            })
+
+          }
+          
+
+          // attributes.position is a flattened Array<Array<Vector3>>.
+          // attributes.skinIndex is a flattened Array<Array(4)<Int>>. Each is an ordinal to a bone.
+          // attributes.skinWeight is a flattened Array<Array(4)<Float>>. Each is a 0.0 - 1.0 weight for a bone.
+
+
+          // if (attributes.skinIndex) {
+          //   const skinIndex = attributes.skinIndex
+          //   const skinWeight = attributes.skinWeight
+
+          //   const bones = object.skeleton.bones
+          //   const bonesPerPosition = slices(Array.from(skinIndex.array).map(i => bones[i]), 4)
+          //   const weightsPerPosition = slices(skinWeight.array, 4)
+          //   positions.forEach((p, i) => {
+          //     const bones = bonesPerPosition[i]
+          //     const weights = weightsPerPosition[i]
+          //     bones.forEach((bone, b) => {
+          //       const weight = weights[b]
+          //       if (weight !== 0) {
+          //         const matrix = bone.matrix.clone().multiply(object.matrixWorld)
+          //         //matrix.multiplyScalar(weight)
+          //         p.applyMatrix4(matrix)
+          //       }
+          //     })
+          //   })
+          // }
+
+
+          pushAll(_triangles, triangles)
 
           /* END FROM*/
-
-          if (geometry.isBufferGeometry) {
-            geometry = new THREE.Geometry().fromBufferGeometry(geometry);
-          }
-
-
-          /*
-          if ( geometry.isGeometry ) {
-              if (object.skeleton) {
-                  const allBones = object.skeleton.bones;
-                  const position = Array.from(og.attributes.position.array);
-                  const skinWeight = Array.from(og.attributes.skinWeight.array);
-                  const skinIndex = Array.from(og.attributes.skinIndex.array);
-                  // "loop each vert"
-                  geometry.vertices.forEach((v, i) => {
-                      const p = i * 3;
-                      const f = i * 4;
-                      var pos = new THREE.Vec3(position[p], position[p + 1], position[p + 2]);
-                      var weights = skinWeight.slice(i * 4, i * 4 + 4);
-                      var totalWeight = weights.reduce((a, b) => a + b);
-                      var indices = skinIndex.slice(i * 4, i * 4 + 4);
-                      var bones = indices.map((a, b) => allBones[a].matrix);
-                      // "then over each bone that affects that vert"
-                      var applied = bones.map((bone, i) =>
-                          pos.clone().applyMatrix4(
-                              // "weighted if you have bone weights"
-                              bone.clone().multiplyScalar(weights[i] / totalWeight)
-                          )
-                      )
-                      // "accumulate that"
-                      var final = applied.reduce((a, b) => a.add(b), new THREE.Vec3(0, 0, 0))
-
-                      final.multiplyScalar(1/4)
-                      //bones.forEach((bone, i) => pos.applyMatrix4(bone.clone().multiplyScalar(weights[i])))
-                      v.set(final.x, final.y, final.z)
-                  })
-                  /*
-                  geometry.vertices.forEach(v => {
-                      object.skeleton.bones.forEach(b => {
-                          window.xx = [v, b]
-                          v.applyMatrix4(b.matrixWorld.clone().multiplyScalar(1/object.skeleton.bones.length))
-                      })
-                  })
-                  * /
-              };
-
-              object.geometry = geometry;
-
-              triangles += geometry.faces.length;
-              objects.push( {
-
-                  geometry: geometry,
-                  matrixWorld: object.matrixWorld,
-                  boneMatrices: object.skeleton && object.skeleton.boneMatrices
-
-              } );
-
-          }
-          */
-
         }
 
       });
 
+      console.log('Triangles', triangles)
+      const stl = toStl(rotate(triangles))
+      window.save = (filename) => console.save(stl, filename || 'export.stl')
+      console.log('save([filename]) to save')
     };
 
   }())
